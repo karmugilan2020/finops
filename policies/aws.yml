@@ -1,0 +1,141 @@
+# FinOps policy pack (AWS) — drop in as policies/aws.yml
+# Notes:
+# - Each "where" and "monthly_usd" is a JS expression string evaluated with { metadata, state }.
+# - Some rules require extra collectors/metrics (marked in comments).
+
+- key: aws.ebs.unattached
+  name: "Unattached EBS volumes"
+  severity: "medium"
+  match:
+    service: "ebs"
+    where: "Array.isArray(metadata.attachments) ? metadata.attachments.length === 0 : true"
+  saving:
+    monthly_usd: "metadata.size_gb ? metadata.size_gb * 0.10 : 0"  # ~$0.10/GB-month (varies by region/vol type)
+
+- key: aws.ec2.idle_by_tag
+  name: "EC2 tagged idle candidates (env!=prod)"
+  severity: "high"
+  match:
+    service: "ec2"
+    where: "metadata?.tags && metadata.tags.env && metadata.tags.env !== 'prod' && state === 'running'"
+  saving:
+    monthly_usd: "20"
+
+- key: aws.ec2.idle_low_cpu
+  name: "EC2 low CPU (7d) & non-prod"
+  severity: "high"
+  match:
+    service: "ec2"
+    where: "state === 'running' && (metadata?.tags?.env || 'dev') !== 'prod' && (metadata.avg_cpu_7d || 0) < 5"
+  saving:
+    monthly_usd: "metadata.on_demand_monthly ? metadata.on_demand_monthly * 0.5 : 25"
+  # requires: CloudWatch CPU 7d avg (metadata.avg_cpu_7d), pricing est (metadata.on_demand_monthly)
+
+- key: aws.ec2.rightsize_family
+  name: "EC2 rightsizing candidate (family downsize)"
+  severity: "medium"
+  match:
+    service: "ec2"
+    where: "state === 'running' && (metadata.avg_cpu_7d || 0) < 15"
+  saving:
+    monthly_usd: "(metadata.on_demand_monthly || 40) * 0.3"
+  # requires: CloudWatch CPU + monthly price est
+
+- key: aws.ebs.gp2_to_gp3
+  name: "EBS gp2 → gp3 conversion"
+  severity: "medium"
+  match:
+    service: "ebs"
+    where: "metadata?.type === 'gp2'"
+  saving:
+    monthly_usd: "metadata.size_gb ? metadata.size_gb * 0.02 : 0"  # rough delta; refine by region
+
+- key: aws.ebs.snapshot_orphaned
+  name: "Orphaned EBS snapshots (>= 90 days)"
+  severity: "high"
+  match:
+    service: "ebs_snapshot"
+    where: "(metadata.volume_id == null || metadata.volume_exists === false) && (metadata.age_days || 0) >= 90"
+  saving:
+    monthly_usd: "metadata.size_gb ? metadata.size_gb * 0.05 : 0"
+  # requires: snapshot inventory (id, size_gb, age_days, volume_exists)
+
+- key: aws.s3.no_lifecycle
+  name: "S3 bucket without lifecycle to IA/Glacier"
+  severity: "medium"
+  match:
+    service: "s3"
+    where: "!(metadata.lifecycle_rules_enabled)"
+  saving:
+    monthly_usd: "(metadata.storage_standard_gb || 0) * 0.01"
+  # requires: S3 collector (bucket size + lifecycle status)
+
+- key: aws.elb.idle
+  name: "Idle ELB/ALB/NLB (7d)"
+  severity: "medium"
+  match:
+    service: "elb"
+    where: "(metadata.req_per_day_avg_7d || 0) < 10"
+  saving:
+    monthly_usd: "15"
+  # requires: CloudWatch RequestCount 7d avg per LB
+
+- key: aws.eip.unattached
+  name: "Unassociated Elastic IPs"
+  severity: "medium"
+  match:
+    service: "eip"
+    where: "!metadata.association_id"
+  saving:
+    monthly_usd: "3.60"
+  # requires: EIP inventory with association_id
+
+- key: aws.natgw.idle
+  name: "Idle NAT Gateway (very low bytes in/out)"
+  severity: "high"
+  match:
+    service: "nat_gateway"
+    where: "((metadata.bytes_in_7d || 0) + (metadata.bytes_out_7d || 0)) < 1073741824"  # < 1 GiB in 7d
+  saving:
+    monthly_usd: "32"  # fixed hourly + data processing; refine from usage
+  # requires: CloudWatch metrics (BytesIn/Out), or usage sampling
+
+- key: aws.logs.no_retention
+  name: "CloudWatch log group without retention"
+  severity: "low"
+  match:
+    service: "cw_log_group"
+    where: "!(metadata.retention_days) || metadata.retention_days === 0"
+  saving:
+    monthly_usd: "5"  # heuristic; depends on ingest volume
+  # requires: CW Logs inventory (retention settings)
+
+- key: aws.rds.idle_by_tag
+  name: "RDS non-prod instance (consider stop/offhours)"
+  severity: "medium"
+  match:
+    service: "rds"
+    where: "(metadata?.tags?.env || 'dev') !== 'prod' && (metadata.conn_avg_7d || 0) < 1"
+  saving:
+    monthly_usd: "metadata.on_demand_monthly ? metadata.on_demand_monthly * 0.5 : 30"
+  # requires: RDS inventory + CW connections avg + price est
+
+- key: aws.rds.storage_unoptimized
+  name: "RDS storage not using GP3"
+  severity: "low"
+  match:
+    service: "rds"
+    where: "metadata?.storage_type && metadata.storage_type !== 'gp3'"
+  saving:
+    monthly_usd: "(metadata.storage_gb || 0) * 0.01"
+
+# (Optional) Keep this if you like simple tag-based gating (already in your file)
+# - key: aws.ec2.idle_by_tag
+#   name: "EC2 tagged idle candidates (env!=prod)"
+#   severity: "high"
+#   match:
+#     service: "ec2"
+#     where: "metadata?.tags && metadata.tags.env && metadata.tags.env !== 'prod' && state === 'running'"
+#   saving:
+#     monthly_usd: "20"
+

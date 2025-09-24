@@ -1,0 +1,36 @@
+import { CostExplorerClient, GetCostAndUsageCommand } from '@aws-sdk/client-cost-explorer';
+import { q } from '../db.js';
+
+
+const region = process.env.AWS_REGION || 'us-east-1';
+const ce = new CostExplorerClient({ region });
+
+
+export async function runAwsCosts(){
+const tenant = await q("SELECT id FROM tenant WHERE slug='demo' LIMIT 1");
+const tenant_id = tenant.rows[0]?.id; if(!tenant_id) return;
+
+
+const end = new Date();
+const start = new Date(end); start.setDate(end.getDate()-30);
+const cmd = new GetCostAndUsageCommand({
+TimePeriod: { Start: start.toISOString().slice(0,10), End: end.toISOString().slice(0,10) },
+Granularity: 'DAILY',
+Metrics: ['UnblendedCost'],
+GroupBy: [{ Type: 'DIMENSION', Key: 'SERVICE' }]
+});
+const resp = await ce.send(cmd);
+for (const day of resp.ResultsByTime || []){
+const d = day.TimePeriod?.Start;
+for (const g of day.Groups || []){
+const service = g.Keys?.[0] || 'Unknown';
+const amt = parseFloat(g.Metrics?.UnblendedCost?.Amount || '0');
+await q(`INSERT INTO cost_daily (tenant_id, provider, usage_date, service, resource_id, unblended_cost, currency)
+VALUES ($1,'aws',$2::date,$3,NULL,$4,'USD')
+ON CONFLICT (tenant_id, provider, usage_date, service, resource_id)
+DO UPDATE SET unblended_cost=EXCLUDED.unblended_cost, currency=EXCLUDED.currency`,
+[tenant_id, d, service, amt]);
+}
+}
+return { ok: true };
+}

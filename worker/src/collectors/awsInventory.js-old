@@ -1,0 +1,47 @@
+import { EC2Client, DescribeInstancesCommand, DescribeVolumesCommand, paginateDescribeInstances, paginateDescribeVolumes } from '@aws-sdk/client-ec2';
+import { q } from '../db.js';
+
+
+const region = process.env.AWS_REGION || 'us-east-1';
+const ec2 = new EC2Client({ region });
+
+
+export async function runAwsInventory(){
+const now = new Date().toISOString();
+const tenant = await q("SELECT id FROM tenant WHERE slug='demo' LIMIT 1");
+const tenant_id = tenant.rows[0]?.id; if(!tenant_id) return;
+
+
+// EC2 instances (paged)
+const p1 = paginateDescribeInstances({ client: ec2 }, {});
+for await (const page of p1){
+for (const r of page.Reservations || []){
+for (const i of r.Instances || []){
+const tags = (i.Tags || []).reduce((m,t)=>{ m[t.Key]=t.Value; return m; },{});
+await q(`INSERT INTO asset (tenant_id, provider, service, resource_id, region, state, metadata, first_seen, last_seen)
+VALUES ($1,'aws','ec2',$2,$3,$4,$5::jsonb, now(), now())
+ON CONFLICT (tenant_id, provider, resource_id) DO UPDATE
+SET region=EXCLUDED.region, state=EXCLUDED.state, metadata=EXCLUDED.metadata, last_seen=now()`,
+[tenant_id, i.InstanceId, (i.Placement?.AvailabilityZone||'').slice(0,-1), i.State?.Name || '', JSON.stringify({ instance_type: i.InstanceType, tags })]);
+}
+}
+}
+
+
+// EBS volumes (paged)
+const p2 = paginateDescribeVolumes({ client: ec2 }, {});
+for await (const page of p2){
+for (const v of page.Volumes || []){
+const attachments = (v.Attachments || []).map(a=>({InstanceId:a.InstanceId, State:a.State}));
+const tags = (v.Tags || []).reduce((m,t)=>{ m[t.Key]=t.Value; return m; },{});
+await q(`INSERT INTO asset (tenant_id, provider, service, resource_id, region, state, metadata, first_seen, last_seen)
+VALUES ($1,'aws','ebs',$2,$3,$4,$5::jsonb, now(), now())
+ON CONFLICT (tenant_id, provider, resource_id) DO UPDATE
+SET region=EXCLUDED.region, state=EXCLUDED.state, metadata=EXCLUDED.metadata, last_seen=now()`,
+[tenant_id, v.VolumeId, (v.AvailabilityZone||'').slice(0,-1), attachments.length ? 'in-use' : 'available', JSON.stringify({ size_gb: v.Size, attachments, tags })]);
+}
+}
+
+
+return { ok: true };
+}

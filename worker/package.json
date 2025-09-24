@@ -1,0 +1,17 @@
+{
+"name": "finops-worker",
+"version": "0.1.0",
+"private": true,
+"type": "module",
+"scripts": {
+"start": "node src/index.js"
+},
+"dependencies": {
+"@aws-sdk/client-cost-explorer": "^3.670.0",
+"@aws-sdk/client-ec2": "^3.670.0",
+"cron": "^3.1.7",
+"dotenv": "^16.4.5",
+"pg": "^8.11.3",
+"yaml": "^2.5.0"
+}
+}

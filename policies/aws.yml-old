@@ -1,0 +1,18 @@
+- key: aws.ebs.unattached
+  name: "Unattached EBS volumes"
+  severity: "medium"
+  match:
+    service: "ebs"
+    where: "Array.isArray(metadata.attachments) ? metadata.attachments.length === 0 : true"
+  saving:
+    monthly_usd: "metadata.size_gb ? metadata.size_gb * 0.10 : 0"
+
+- key: aws.ec2.idle_by_tag
+  name: "EC2 tagged idle candidates (env!=prod)"
+  severity: "high"
+  match:
+    service: "ec2"
+    where: "metadata?.tags && metadata.tags.env && metadata.tags.env !== 'prod' && state === 'running'"
+  saving:
+    monthly_usd: "20"
+
